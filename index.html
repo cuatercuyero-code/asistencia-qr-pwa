@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Asistencia QR</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Asistencia QR</div>
+    <div class="status" id="netStatus">Offline</div>
+  </header>
+
+  <main class="wrap">
+    <section class="card">
+      <h2>Acceso</h2>
+      <input id="pin" class="input" type="password" inputmode="numeric" placeholder="PIN (8+ dígitos)">
+      <input id="webapp" class="input" type="url" placeholder="WEBAPP_URL (Apps Script /exec)">
+      <button class="btn" id="btnSaveCfg">Guardar</button>
+      <div class="hint" id="lockMsg"></div>
+    </section>
+
+    <section class="card">
+      <h2>Pase de lista</h2>
+      <div class="row">
+        <button class="btn" id="btnScan">Escanear QR</button>
+        <button class="btn ghost" id="btnManual">Manual</button>
+        <button class="btn ghost" id="btnSync">Sincronizar</button>
+      </div>
+      <div class="hint" id="msg"></div>
+    </section>
+
+    <section class="card" id="scanCard" style="display:none">
+      <h2>Escáner</h2>
+      <div id="reader" style="width:100%"></div>
+      <button class="btn ghost" id="btnStop">Cerrar</button>
+    </section>
+
+    <section class="card" id="manualCard" style="display:none">
+      <h2>Registro manual</h2>
+      <select id="grupo" class="input"></select>
+      <input id="boleta" class="input" placeholder="Boleta">
+      <input id="notes" class="input" placeholder="Notas (opcional)">
+      <button class="btn" id="btnManualSend">Registrar</button>
+      <button class="btn ghost" id="btnManualClose">Cerrar</button>
+      <div class="hint" id="manualMsg"></div>
+    </section>
+
+    <section class="card">
+      <h2>Cola offline</h2>
+      <div class="mono" id="queueInfo">0 pendientes</div>
+    </section>
+  </main>
+
+  <!-- Escáner QR -->
+  <script src="https://unpkg.com/html5-qrcode"></script>
+
+  <!-- Lógica de la app -->
+  <script src="app.js"></script>
+</body>
+</html>
