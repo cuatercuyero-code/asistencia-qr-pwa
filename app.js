@@ -2,8 +2,12 @@ const LS_CFG = 'aqr_cfg_v1';
 const LS_Q   = 'aqr_queue_v1';
 
 let html5Qr = null;
-let scanInProgress = false;
-let scanOfflineId = null;
+
+// Scanner persistente (se cierra SOLO con botón "Cerrar")
+let scanBusy = false;           // evita llamadas concurrentes
+let scanCooldownUntil = 0;      // tiempo (ms) hasta permitir otro registro
+let lastTokenSeen = '';         // evita repetir el mismo QR mientras se está viendo
+const SCAN_COOLDOWN_MS = 1500;  // ajusta: 1000–2500 según tu cámara
 
 function loadCfg(){ try { return JSON.parse(localStorage.getItem(LS_CFG) || '{}'); } catch { return {}; } }
 function saveCfg(cfg){ localStorage.setItem(LS_CFG, JSON.stringify(cfg)); }
@@ -73,25 +77,20 @@ async function loadGroups(){
   });
 }
 
-// --------- ESCÁNER: 1 envío por sesión ---------
+// --------- ESCÁNER: PERSISTENTE (no se apaga tras registrar) ---------
 async function startScanner() {
   if (!window.Html5Qrcode) throw new Error('No se cargó html5-qrcode.');
-
-  // Evitar doble apertura
-  if (scanInProgress) return;
 
   show('scanCard', true);
   setMsg('');
 
-  // Reset de sesión
-  scanInProgress = false;
-  scanOfflineId = crypto.randomUUID();
+  // Si ya está corriendo, no reiniciar
+  if (html5Qr) return;
 
-  // Si hay lector previo, detenerlo
-  if (html5Qr) {
-    try { await html5Qr.stop(); } catch {}
-    html5Qr = null;
-  }
+  // Reset estados de sesión
+  scanBusy = false;
+  scanCooldownUntil = 0;
+  lastTokenSeen = '';
 
   html5Qr = new Html5Qrcode('reader');
 
@@ -99,9 +98,14 @@ async function startScanner() {
     { facingMode: 'environment' },
     { fps: 8, qrbox: { width: 240, height: 240 } },
     async (decodedText) => {
-      // Bloqueo duro: si ya entró una vez, ignorar todo lo demás
-      if (scanInProgress) return;
-      scanInProgress = true;
+      const now = Date.now();
+
+      // Cooldown: ignorar todo mientras dura
+      if (now < scanCooldownUntil) return;
+
+      // Evitar concurrencia si el callback se dispara en paralelo
+      if (scanBusy) return;
+      scanBusy = true;
 
       try {
         let token = decodedText;
@@ -111,14 +115,20 @@ async function startScanner() {
           try { token = new URL(decodedText).searchParams.get('t') || decodedText; } catch {}
         }
 
+        // Si la cámara sigue viendo el mismo QR, no repetir
+        if (token === lastTokenSeen) {
+          scanBusy = false;
+          return;
+        }
+        lastTokenSeen = token;
+
         const data = {
           token,
           device: deviceLabel(),
-          offlineId: scanOfflineId,
+          offlineId: crypto.randomUUID(), // por intento; servidor deduplica por día
           notes: ''
         };
 
-        // En offline: encolar (solo una vez) y cerrar cámara
         if (!navigator.onLine) {
           enqueue({ action:'scan', data });
           setMsg('Registrado en cola offline (QR).');
@@ -126,7 +136,6 @@ async function startScanner() {
           const res = await api('scan', data);
 
           if (!res.ok) {
-            // Si falla online, encolar (solo una vez) y cerrar
             enqueue({ action:'scan', data });
             throw new Error(res.msg || res.error || 'Error. Se guardó offline.');
           }
@@ -135,20 +144,15 @@ async function startScanner() {
           else setMsg(`OK: ${res.result?.alumno || ''}`);
         }
 
-        // Cerrar cámara SIEMPRE después del primer intento (ok o dedupe)
-        try { await html5Qr.stop(); } catch {}
-        html5Qr = null;
-
-        show('scanCard', false);
-
-        // Reset para próxima vez (cuando vuelvas a abrir el escáner)
-        scanInProgress = false;
-        scanOfflineId = null;
+        // Cooldown para evitar múltiples registros por ráfaga
+        scanCooldownUntil = Date.now() + SCAN_COOLDOWN_MS;
 
       } catch (e) {
-        // En error, permitir reintento sin cerrar cámara
-        scanInProgress = false;
         setMsg(String(e.message || e));
+        // Cooldown corto en error para evitar spam
+        scanCooldownUntil = Date.now() + 800;
+      } finally {
+        scanBusy = false;
       }
     },
     () => {} // onScanFailure: ignorar
@@ -158,8 +162,11 @@ async function startScanner() {
 async function stopScanner(){
   try{ if (html5Qr) await html5Qr.stop(); }catch{}
   html5Qr = null;
-  scanInProgress = false;
-  scanOfflineId = null;
+
+  scanBusy = false;
+  scanCooldownUntil = 0;
+  lastTokenSeen = '';
+
   show('scanCard', false);
 }
 
