@@ -1,7 +1,9 @@
 const LS_CFG = 'aqr_cfg_v1';
 const LS_Q   = 'aqr_queue_v1';
 
-let html5Qr;
+let html5Qr = null;
+let scanInProgress = false;
+let scanOfflineId = null;
 
 function loadCfg(){ try { return JSON.parse(localStorage.getItem(LS_CFG) || '{}'); } catch { return {}; } }
 function saveCfg(cfg){ localStorage.setItem(LS_CFG, JSON.stringify(cfg)); }
@@ -42,6 +44,7 @@ function updateQueueInfo(){
 async function syncQueue(){
   const q = loadQ();
   if (!q.length) { setMsg('Sin pendientes.'); return; }
+
   let ok = 0;
   const rest = [];
   for (const it of q){
@@ -70,22 +73,97 @@ async function loadGroups(){
   });
 }
 
-async function registerScanToken(token, offlineId){
-  const data = { token, device: deviceLabel(), offlineId, notes:'' };
+// --------- ESCÁNER: 1 envío por sesión ---------
+async function startScanner() {
+  if (!window.Html5Qrcode) throw new Error('No se cargó html5-qrcode.');
 
-  if (!navigator.onLine){
-    enqueue({ action:'scan', data });
-    setMsg('Registrado en cola offline (QR).');
-    return;
+  // Evitar doble apertura
+  if (scanInProgress) return;
+
+  show('scanCard', true);
+  setMsg('');
+
+  // Reset de sesión
+  scanInProgress = false;
+  scanOfflineId = crypto.randomUUID();
+
+  // Si hay lector previo, detenerlo
+  if (html5Qr) {
+    try { await html5Qr.stop(); } catch {}
+    html5Qr = null;
   }
-  const res = await api('scan', data);
-  if (!res.ok){
-    enqueue({ action:'scan', data });
-    throw new Error(res.msg || res.error || 'Error. Se guardó offline.');
-  }
-  setMsg(`OK: ${res.result?.alumno || ''}`);
+
+  html5Qr = new Html5Qrcode('reader');
+
+  await html5Qr.start(
+    { facingMode: 'environment' },
+    { fps: 8, qrbox: { width: 240, height: 240 } },
+    async (decodedText) => {
+      // Bloqueo duro: si ya entró una vez, ignorar todo lo demás
+      if (scanInProgress) return;
+      scanInProgress = true;
+
+      try {
+        let token = decodedText;
+
+        // Si viene como URL ...?t=TOKEN, extraer TOKEN
+        if (decodedText.includes('t=')) {
+          try { token = new URL(decodedText).searchParams.get('t') || decodedText; } catch {}
+        }
+
+        const data = {
+          token,
+          device: deviceLabel(),
+          offlineId: scanOfflineId,
+          notes: ''
+        };
+
+        // En offline: encolar (solo una vez) y cerrar cámara
+        if (!navigator.onLine) {
+          enqueue({ action:'scan', data });
+          setMsg('Registrado en cola offline (QR).');
+        } else {
+          const res = await api('scan', data);
+
+          if (!res.ok) {
+            // Si falla online, encolar (solo una vez) y cerrar
+            enqueue({ action:'scan', data });
+            throw new Error(res.msg || res.error || 'Error. Se guardó offline.');
+          }
+
+          if (res.result?.deduped) setMsg('Ya estaba registrado (deduplicado).');
+          else setMsg(`OK: ${res.result?.alumno || ''}`);
+        }
+
+        // Cerrar cámara SIEMPRE después del primer intento (ok o dedupe)
+        try { await html5Qr.stop(); } catch {}
+        html5Qr = null;
+
+        show('scanCard', false);
+
+        // Reset para próxima vez (cuando vuelvas a abrir el escáner)
+        scanInProgress = false;
+        scanOfflineId = null;
+
+      } catch (e) {
+        // En error, permitir reintento sin cerrar cámara
+        scanInProgress = false;
+        setMsg(String(e.message || e));
+      }
+    },
+    () => {} // onScanFailure: ignorar
+  );
 }
 
+async function stopScanner(){
+  try{ if (html5Qr) await html5Qr.stop(); }catch{}
+  html5Qr = null;
+  scanInProgress = false;
+  scanOfflineId = null;
+  show('scanCard', false);
+}
+
+// --------- MANUAL ---------
 async function registerManual(){
   const grupoId = document.getElementById('grupo').value;
   const boleta  = document.getElementById('boleta').value.trim();
@@ -105,106 +183,11 @@ async function registerManual(){
     enqueue({ action:'manual', data });
     throw new Error(res.msg || res.error || 'Error. Se guardó offline.');
   }
-  setManualMsg(`OK: ${res.result?.alumno || ''}`);
+  if (res.result?.deduped) setManualMsg('Ya estaba registrado (deduplicado).');
+  else setManualMsg(`OK: ${res.result?.alumno || ''}`);
 }
 
-let scanInProgress = false;
-let scanOfflineId = null;
-
-// Coloca estas variables a nivel global (arriba del archivo app.js)
-let html5Qr = null;
-let scanInProgress = false;
-let scanOfflineId = null;
-
-// Reemplaza COMPLETA tu función startScanner() por esta
-async function startScanner() {
-  show('scanCard', true);
-  setMsg('');
-
-  if (!window.Html5Qrcode) throw new Error('No se cargó html5-qrcode.');
-  if (html5Qr) {
-    // Si por alguna razón ya existe, detener antes de reiniciar
-    try { await html5Qr.stop(); } catch {}
-    html5Qr = null;
-  }
-
-  scanInProgress = false;
-  scanOfflineId = crypto.randomUUID(); // 1 solo ID por sesión de escaneo
-
-  html5Qr = new Html5Qrcode('reader');
-
-  await html5Qr.start(
-    { facingMode: 'environment' },
-    { fps: 10, qrbox: { width: 240, height: 240 } },
-    async (decodedText) => {
-      // Este callback dispara muchas veces; bloqueamos al primer intento
-      if (scanInProgress) return;
-      scanInProgress = true;
-
-      try {
-        let token = decodedText;
-
-        // Si viene como URL ...?t=TOKEN, extraer TOKEN
-        if (decodedText.includes('t=')) {
-          try { token = new URL(decodedText).searchParams.get('t') || decodedText; } catch {}
-        }
-
-        const data = {
-          token,
-          device: deviceLabel(),
-          offlineId: scanOfflineId,
-          notes: ''
-        };
-
-        // Offline: encola y cierra cámara
-        if (!navigator.onLine) {
-          enqueue({ action: 'scan', data });
-          setMsg('Registrado en cola offline (QR).');
-        } else {
-          const res = await api('scan', data);
-
-          if (!res.ok) {
-            // Si falla online, encolar (pero sin repetir) y avisar
-            enqueue({ action: 'scan', data });
-            throw new Error(res.msg || res.error || 'Error. Se guardó offline.');
-          }
-
-          // Mensaje según deduplicación del servidor
-          if (res.result?.deduped) {
-            setMsg('Ya estaba registrado (deduplicado).');
-          } else {
-            setMsg(`OK: ${res.result?.alumno || ''}`);
-          }
-        }
-
-        // Detener cámara inmediatamente
-        try { await html5Qr.stop(); } catch {}
-        html5Qr = null;
-
-        // Cerrar vista de escáner
-        show('scanCard', false);
-
-        // Reset (listo para el siguiente escaneo cuando vuelvas a abrir)
-        scanInProgress = false;
-        scanOfflineId = null;
-
-      } catch (e) {
-        // Si hubo error, permitir reintentar sin salir del escáner
-        scanInProgress = false;
-        setMsg(String(e.message || e));
-      }
-    },
-    () => {} // onScanFailure: ignoramos
-  );
-}
-
-async function stopScanner(){
-  try{ if (html5Qr) await html5Qr.stop(); }catch{}
-  scanInProgress = false;
-  scanOfflineId = null;
-  show('scanCard', false);
-}
-
+// --------- INIT ---------
 function init(){
   netUI();
   window.addEventListener('online', ()=>{ netUI(); syncQueue().catch(()=>{}); });
