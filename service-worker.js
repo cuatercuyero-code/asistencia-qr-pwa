@@ -1,4 +1,4 @@
-const CACHE = 'asistenciaqr-v2';
+const CACHE = 'asistenciaqr-v3';
 const ASSETS = [
   './',
   './index.html',
